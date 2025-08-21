@@ -2580,15 +2580,15 @@ public class Resources {
     }
 
     /**
-     * Loads an XML parser for the specified file.
-     *
-     * @param file the path for the XML file to parse
-     * @param id the resource identifier for the file
-     * @param assetCookie the asset cookie for the file
-     * @param type the type of resource (used for logging)
-     * @return a parser for the specified XML file
-     * @throws NotFoundException if the file could not be loaded
-     */
+	* 加载指定 XML 文件的解析器。
+	*
+	* @param file 待解析 XML 文件的路径
+	* @param id 文件的资源标识符
+	* @param assetCookie 文件的资源 cookie
+	* @param type 资源类型（用于日志记录）
+	* @return 指定 XML 文件的解析器
+	* @throws NotFoundException（如果文件无法加载）
+	*/
     @NonNull
     @UnsupportedAppUsage
     XmlResourceParser loadXmlResourceParser(String file, int id, int assetCookie,

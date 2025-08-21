@@ -432,24 +432,18 @@ public abstract class LayoutInflater {
     public View inflate(XmlPullParser parser, @Nullable ViewGroup root) {
         return inflate(parser, root, root != null);
     }
+	
 
+	
     /**
-     * Inflate a new view hierarchy from the specified xml resource. Throws
-     * {@link InflateException} if there is an error.
-     *
-     * @param resource ID for an XML layout resource to load (e.g.,
-     *        <code>R.layout.main_page</code>)
-     * @param root Optional view to be the parent of the generated hierarchy (if
-     *        <em>attachToRoot</em> is true), or else simply an object that
-     *        provides a set of LayoutParams values for root of the returned
-     *        hierarchy (if <em>attachToRoot</em> is false.)
-     * @param attachToRoot Whether the inflated hierarchy should be attached to
-     *        the root parameter? If false, root is only used to create the
-     *        correct subclass of LayoutParams for the root view in the XML.
-     * @return The root View of the inflated hierarchy. If root was supplied and
-     *         attachToRoot is true, this is root; otherwise it is the root of
-     *         the inflated XML file.
-     */
+	* 从指定的 XML 资源扩充新的视图层次结构。如果发生错误，则抛出{@link InflateException}
+	*
+	* @param 要加载的 XML 布局资源的资源 ID（例如,<code>R.layout.main_page</code>）
+	* @param root 可选，指定生成的层次结构的父级视图（如果<em>attachToRoot</em> 为 true），
+			否则，仅指定一个对象，该对象为返回层次结构的根视图提供一组 LayoutParams 值（如果 <em>attachToRoot</em> 为 false）
+	* @param attachToRoot 是否应将扩充的层次结构附加到root 参数？如果为 false，则 root 仅用于为 XML 中的根视图创正确的 LayoutParams 子类
+	* @return 扩充层次结构的根视图。如果提供了 root 并为 attachmentToRoot 为 true，则返回 root；否则，它是扩展 XML 文件的根目录
+	*/
     public View inflate(@LayoutRes int resource, @Nullable ViewGroup root, boolean attachToRoot) {
         final Resources res = getContext().getResources();
         if (DEBUG) {
