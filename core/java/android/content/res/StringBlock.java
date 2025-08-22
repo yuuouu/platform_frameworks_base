@@ -109,42 +109,47 @@ public final class StringBlock implements Closeable {
     @Nullable
     public CharSequence getSequence(int idx) {
         synchronized (this) {
-            if (mStrings != null) {
+            // 1. 【缓存查找】首先尝试从缓存中获取字符串，避免重复解析
+            if (mStrings != null) { // 如果使用数组缓存
                 CharSequence res = mStrings[idx];
                 if (res != null) {
-                    return res;
+                    return res; // 缓存命中，直接返回
                 }
-            } else if (mSparseStrings != null) {
+            } else if (mSparseStrings != null) { // 如果使用稀疏数组缓存（用于大字符串池）
                 CharSequence res = mSparseStrings.get(idx);
                 if (res != null) {
-                    return res;
+                    return res; // 缓存命中，直接返回
                 }
             } else {
-                final int num = nativeGetSize(mNative);
-                if (mUseSparse && num > 250) {
+                // 2. 【初始化缓存】如果缓存尚未初始化
+                final int num = nativeGetSize(mNative); // 获取字符串池的总大小
+                if (mUseSparse && num > 250) { // 如果字符串池很大（>250），使用更节省内存的SparseArray
                     mSparseStrings = new SparseArray<CharSequence>();
-                } else {
+                } else { // 否则使用普通数组
                     mStrings = new CharSequence[num];
                 }
             }
+            // 3. 【核心调用】通过JNI从Native层的字符串池中获取原始字符串内容
             String str = nativeGetString(mNative, idx);
             if (str == null) {
                 return null;
             }
-            CharSequence res = str;
+            CharSequence res = str;// 默认结果就是原始字符串
+            // 4. 【样式处理】获取该字符串的样式信息（如哪些部分需要粗体、斜体）
             int[] style = nativeGetStyle(mNative, idx);
             if (localLOGV) Log.v(TAG, "Got string: " + str);
             if (localLOGV) Log.v(TAG, "Got styles: " + Arrays.toString(style));
-            if (style != null) {
+            if (style != null) { // 如果字符串包含样式信息
                 if (mStyleIDs == null) {
-                    mStyleIDs = new StyleIDs();
+                    mStyleIDs = new StyleIDs(); // 初始化样式ID缓存
                 }
 
                 // the style array is a flat array of <type, start, end> hence
                 // the magic constant 3.
+                // 5. 【解析样式标签】样式数组是扁平化的格式：<类型, 开始位置, 结束位置>，所以步长为3
                 for (int styleIndex = 0; styleIndex < style.length; styleIndex += 3) {
                     int styleId = style[styleIndex];
-
+                    // 检查是否已经是已知的样式ID（避免重复解析）
                     if (styleId == mStyleIDs.boldId || styleId == mStyleIDs.italicId
                             || styleId == mStyleIDs.underlineId || styleId == mStyleIDs.ttId
                             || styleId == mStyleIDs.bigId || styleId == mStyleIDs.smallId
@@ -152,14 +157,14 @@ public final class StringBlock implements Closeable {
                             || styleId == mStyleIDs.strikeId || styleId == mStyleIDs.listItemId
                             || styleId == mStyleIDs.marqueeId) {
                         // id already found skip to next style
-                        continue;
+                        continue;// 已经是已知样式，跳过
                     }
-
+                    // 获取样式标签的字符串表示（如"b", "i", "u"等）
                     String styleTag = nativeGetString(mNative, styleId);
                     if (styleTag == null) {
                         return null;
                     }
-
+                    // 6. 【映射样式标签】将字符串标签映射到具体的样式ID
                     if (styleTag.equals("b")) {
                         mStyleIDs.boldId = styleId;
                     } else if (styleTag.equals("i")) {
@@ -188,9 +193,10 @@ public final class StringBlock implements Closeable {
                         mStyleIDs.mNoHyphenId = styleId;
                     }
                 }
-
+                // 7. 【应用样式】将样式信息应用到原始字符串，创建SpannableString等对象
                 res = applyStyles(str, style, mStyleIDs);
             }
+            // 8. 【缓存结果】将最终结果（可能是带样式的CharSequence）放入缓存
             if (res != null) {
                 if (mStrings != null) mStrings[idx] = res;
                 else mSparseStrings.put(idx, res);
@@ -198,7 +204,7 @@ public final class StringBlock implements Closeable {
             return res;
         }
     }
-
+    
     @Override
     protected void finalize() throws Throwable {
         try {

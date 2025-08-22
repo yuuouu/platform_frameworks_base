@@ -1090,36 +1090,159 @@ base::expected<uint32_t, NullOrIOError> AssetManager2::GetResourceTypeSpecFlags(
   return result->type_flags;
 }
 
+// 根据资源ID获取资源值
+// 参数：
+//   resid: 要查找的资源ID（32位无符号整数）
+//   may_be_bag: 是否允许返回复杂类型（bag）的资源。如果为false且找到bag，则返回错误。
+//   density_override: 密度覆盖值，用于指定查找资源时优先考虑的屏幕密度（0表示使用默认配置）
+// 返回值：base::expected<SelectedValue, NullOrIOError>
+//   - 成功：包含资源值的SelectedValue对象
+//   - 失败：错误信息（NullOrIOError）
 base::expected<AssetManager2::SelectedValue, NullOrIOError> AssetManager2::GetResource(
-    uint32_t resid, bool may_be_bag, uint16_t density_override) const {
+  uint32_t resid, bool may_be_bag, uint16_t density_override) const {
+
+  // 1. 【核心查找】调用FindEntry方法在资源表中查找指定资源ID的条目。
+  //    参数说明：
+  //    - resid: 资源ID
+  //    - density_override: 密度覆盖值
+  //    - stop_at_first_match: false，表示要找到最匹配当前配置的条目
+  //    - ignore_configuration: false，表示需要考虑配置匹配（如语言、区域、密度等）
   auto result = FindEntry(resid, density_override, false /* stop_at_first_match */,
                           false /* ignore_configuration */);
+
+  // 2. 检查查找是否失败
   if (!result.has_value()) {
+    // 查找失败，将错误向上传递
     return base::unexpected(result.error());
   }
 
+  // 3. 【处理复杂类型（Bag）】尝试将查找结果转换为Map Entry（复杂类型）
+  //    std::get_if是变体(Variant)的安全访问方法，如果entry是ResTable_map_entry类型则返回指针
   auto result_map_entry = std::get_if<incfs::verified_map_ptr<ResTable_map_entry>>(&result->entry);
   if (result_map_entry != nullptr) {
+    // 找到了一个复杂类型（Bag）的条目
+    
+    // 4. 检查调用者是否允许返回复杂类型
     if (!may_be_bag) {
+      // 调用者不允许复杂类型，记录错误并返回
       LOG(ERROR) << base::StringPrintf("Resource %08x is a complex map type.", resid);
       return base::unexpected(std::nullopt);
     }
 
-    // Create a reference since we can't represent this complex type as a Res_value.
+    // 5. 调用者允许复杂类型，但无法直接表示为一个简单的Res_value。
+    //    因此创建一个引用（REFERENCE）类型的SelectedValue，指向这个Bag资源本身。
+    //    这样上层代码可以通过解析这个引用来处理Bag资源。
     return SelectedValue(Res_value::TYPE_REFERENCE, resid, result->cookie, result->type_flags,
-                         resid, result->config);
+                        resid, result->config);
   }
 
-  // Convert the package ID to the runtime assigned package ID.
+  // 6. 【处理简单类型】如果不是复杂类型，那么条目应该是一个简单的Res_value
+  //    从查找结果中获取Res_value对象
   Res_value value = std::get<Res_value>(result->entry);
+
+  // 7. 【关键步骤】动态资源引用解析
+  //    使用动态引用表（dynamic_ref_table）来查找并修正资源值中的包ID。
+  //    这是因为共享库中的资源ID在编译时和运行时可能不同，需要动态映射。
   result->dynamic_ref_table->lookupResourceValue(&value);
 
+  // 8. 创建并返回SelectedValue对象，包装最终的资源值
   return SelectedValue(value.dataType, value.data, result->cookie, result->type_flags,
-                       resid, result->config);
+                      resid, result->config);
 }
 
+
+/**
+ * 解析一个资源引用。如果传入的value是一个对另一个资源的引用，则递归地解析它，直到获得最终的值。
+ * 参数：
+ *   value: 输入输出参数。传入一个可能包含引用的SelectedValue，解析完成后会被替换为最终的值。
+ *   cache_value: 是否将解析结果缓存起来，以提高后续对同一引用的解析速度。
+ * 返回值：base::expected<std::monostate, NullOrIOError>
+ *   - 成功：返回空的expected（std::monostate表示无额外返回值，操作成功即足够）
+ *   - 失败：返回错误信息（NullOrIOError）
+ */
 base::expected<std::monostate, NullOrIOError> AssetManager2::ResolveReference(
     AssetManager2::SelectedValue& value, bool cache_value) const {
+  // 1. 【基础检查】检查当前value是否需要解析
+  //    Res_value::TYPE_REFERENCE 是资源引用类型的常量（通常是0x01）
+  //    如果类型不是引用，或者引用的资源ID为0，则直接返回，无事可做。
+  if (value.type != Res_value::TYPE_REFERENCE || value.data == 0U) {
+    // Not a reference. Nothing to do.
+    return {}; // 返回一个表示成功的空expected
+  }
+
+  // 2. 【保存原始信息】在开始解析前，保存原始的标志位和资源ID。
+  //    因为value对象在解析过程中会被覆盖，需要保存这些信息以备后续使用。
+  const uint32_t original_flags = value.flags;
+  const uint32_t original_resid = value.data; // 最初要解析的引用ID
+
+  // 3. 【缓存检查】如果启用缓存，先尝试从缓存中查找是否已经解析过这个引用。
+  if (cache_value) {
+    // cached_resolved_values_ 很可能是一个unordered_map，缓存了引用ID到其解析结果的映射。
+    auto cached_value = cached_resolved_values_.find(value.data);
+    if (cached_value != cached_resolved_values_.end()) {
+      // 缓存命中！直接用缓存的结果替换当前value。
+      value = cached_value->second;
+      // 将原始的标志位合并到解析结果中（缓存的值不包含原始flags）
+      value.flags |= original_flags;
+      return {}; // 返回成功，解析完成
+    }
+  }
+
+  // 4. 【准备循环解析】初始化循环变量。
+  uint32_t combined_flags = 0U;      // 用于在递归解析过程中合并所有层级资源的flags
+  uint32_t resolve_resid = original_resid; // 当前要解析的资源ID，初始为原始ID
+  constexpr const uint32_t kMaxIterations = 20; // 最大解析迭代次数，防止引用循环导致无限递归
+
+  // 5. 【核心循环】开始解析引用链
+  for (uint32_t i = 0U;; i++) {
+    // 5.1 【关键调用】根据当前资源ID获取其资源值。
+    //      may_be_bag参数为true，表示我们允许获取的值是一个资源包（bag），但在此上下文中，
+    //      如果解析引用时遇到bag，可能会选择其默认值或产生错误。
+    auto result = GetResource(resolve_resid, true /*may_be_bag*/);
+    
+    // 5.2 检查获取资源是否失败（不仅是未找到，可能是IO错误）
+    if (!result.has_value()) {
+      // 解析失败，将value设置为最后尝试解析的资源ID，并返回错误。
+      value.resid = resolve_resid;
+      return base::unexpected(result.error());
+    }
+
+    // 5.3 【更新value】用新获取的资源值替换当前的value。
+    value = *result;
+    // 将之前所有层级合并的flags应用到当前值上
+    value.flags |= combined_flags;
+
+    // 5.4 【终止条件检查】检查是否应该结束解析循环。
+    //      满足以下任一条件则停止：
+    //      a) 当前获取的值不再是引用类型（我们找到了最终的值）
+    //      b) 引用的数据是空或未定义（DATA_NULL_UNDEFINED）
+    //      c) 引用指向自己（resolve_resid），避免循环引用中的自引用
+    //      d) 达到最大迭代次数（kMaxIterations），防止无限循环
+    if (result->type != Res_value::TYPE_REFERENCE ||
+        result->data == Res_value::DATA_NULL_UNDEFINED ||
+        result->data == resolve_resid || i == kMaxIterations) {
+      // 引用解析结束
+
+      // 5.4.1 如果启用缓存，将最终解析结果存入缓存。
+      //       键是原始引用ID(original_resid)，值是当前解析结果(value)
+      if (cache_value) {
+        cached_resolved_values_[original_resid] = value;
+      }
+
+      // 5.4.2 将最外层的原始标志位合并到最终结果中。
+      //       注意：缓存的值是不包含original_flags的，所以每次从缓存取出后都需要重新合并。
+      value.flags |= original_flags;
+      return {}; // 返回成功，解析完成
+    }
+
+    // 5.5 【准备下一次迭代】如果当前值仍然是一个引用，准备解析下一个资源。
+    //      保存当前资源的flags，用于后续合并。
+    combined_flags = result->flags;
+    //      设置下一轮要解析的资源ID为当前引用所指向的ID
+    resolve_resid = result->data;
+  } 
+}
+
   if (value.type != Res_value::TYPE_REFERENCE || value.data == 0U) {
     // Not a reference. Nothing to do.
     return {};
@@ -1436,66 +1559,106 @@ static bool Utf8ToUtf16(StringPiece str, std::u16string* out) {
   return true;
 }
 
+/**
+ * 根据资源名称、回退类型和回退包名来查找资源ID
+ * 参数：
+ *   resource_name: 资源名称字符串，格式可以是以下任何一种：
+ *                  "package:type/entry" (完整格式，如 "android:string/ok")
+ *                  "type/entry"     (省略包名，使用fallback_package)
+ *                  "entry"          (省略包名和类型，使用fallback_package和fallback_type)
+ *   fallback_type: 当resource_name中未指定类型时使用的默认类型（如 "string"）
+ *   fallback_package: 当resource_name中未指定包名时使用的默认包名（如 "android"）
+ * 返回值：base::expected<uint32_t, NullOrIOError>
+ *   - 成功：包含资源ID的base::expected
+ *   - 失败：包含错误信息的base::expected（std::nullopt表示未找到，IOError表示IO错误）
+**/
 base::expected<uint32_t, NullOrIOError> AssetManager2::GetResourceId(
     const std::string& resource_name, const std::string& fallback_type,
     const std::string& fallback_package) const {
+  // 1. 解析资源名称字符串,使用StringPiece（类似字符串视图，避免拷贝）来接收解析结果
   StringPiece package_name, type, entry;
+  // ExtractResourceName函数将"package:type/entry"格式的字符串分解为三个部分
   if (!ExtractResourceName(resource_name, &package_name, &type, &entry)) {
+    // 如果解析失败（格式不正确），返回未找到的错误
     return base::unexpected(std::nullopt);
   }
 
+  // 2. 检查条目名是否为空（条目名是必须的）
   if (entry.empty()) {
     return base::unexpected(std::nullopt);
   }
 
+  // 3. 处理包名：如果解析出的包名为空，使用回退包名
   if (package_name.empty()) {
     package_name = fallback_package;
   }
 
+  // 4. 处理类型：如果解析出的类型为空，使用回退类型
   if (type.empty()) {
     type = fallback_type;
   }
 
+  // 5. 将UTF-8编码的类型字符串转换为UTF-16编码,这是因为Android资源表内部使用UTF-16字符串
   std::u16string type16;
   if (!Utf8ToUtf16(type, &type16)) {
+    // 编码转换失败，返回错误
     return base::unexpected(std::nullopt);
   }
 
+  // 6. 将UTF-8编码的条目字符串转换为UTF-16编码
   std::u16string entry16;
   if (!Utf8ToUtf16(entry, &entry16)) {
+    // 编码转换失败，返回错误
     return base::unexpected(std::nullopt);
   }
 
+  // 7. 准备用于特殊处理的常量字符串,kAttr16: 普通的"attr"类型（属性类型）
   const StringPiece16 kAttr16 = u"attr";
+  //    kAttrPrivate16: 私有属性类型，用于框架库中的私有属性
   const static std::u16string kAttrPrivate16 = u"^attr-private";
 
+  // 8. 【核心循环】遍历所有已加载的包组（PackageGroup）,包组代表一组共享相同包名但可能针对不同配置的包
   for (const PackageGroup& package_group : package_groups_) {
+    // 遍历当前包组中的所有已配置包
     for (const ConfiguredPackage& package_impl : package_group.packages_) {
+      // 获取LoadedPackage对象，它包含实际的资源数据
       const LoadedPackage* package = package_impl.loaded_package_;
+      
+      // 9. 检查包名是否匹配
       if (package_name != package->GetPackageName()) {
-        // All packages in the same group are expected to have the same package name.
+        // 同一个包组中的包应该有相同的包名，所以如果不匹配就直接break内层循环
+        // 继续检查下一个包组
         break;
       }
 
+      // 10. 【核心查询】在当前包中按名称查找条目
+      //      FindEntryByName会在包的资源符号表中查找匹配 (type16, entry16) 的条目
       base::expected<uint32_t, NullOrIOError> resid = package->FindEntryByName(type16, entry16);
+      
+      // 11. 检查是否是IO错误（而不仅仅是未找到）
       if (UNLIKELY(IsIOError(resid))) {
+         // 如果是IO错误（如资源表损坏），向上传播错误
          return base::unexpected(resid.error());
        }
 
+      // 12. 【特殊处理】如果没有找到，且查找的是普通属性类型("attr"),则尝试查找私有属性类型("^attr-private")
       if (!resid.has_value() && kAttr16 == type16) {
-        // Private attributes in libraries (such as the framework) are sometimes encoded
-        // under the type '^attr-private' in order to leave the ID space of public 'attr'
-        // free for future additions. Check '^attr-private' for the same name.
+        // 私有属性在框架库等地方有时被编码为'^attr-private'类型,这是为了保留公共'attr'的ID空间供未来使用
         resid = package->FindEntryByName(kAttrPrivate16, entry16);
       }
 
+      // 13. 如果找到了资源（无论是在常规查找还是私有属性查找中）
       if (resid.has_value()) {
+        // 修复包ID：将找到的资源ID中的包ID部分替换为运行时分配的动态包ID,这是为了处理共享库的动态引用问题
         return fix_package_id(*resid, package_group.dynamic_ref_table->mAssignedPackageId);
       }
     }
   }
+  
+  // 14. 遍历了所有包都没有找到，返回未找到的错误
   return base::unexpected(std::nullopt);
 }
+
 
 void AssetManager2::RebuildFilterList() {
   for (PackageGroup& group : package_groups_) {

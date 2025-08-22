@@ -452,6 +452,7 @@ public abstract class LayoutInflater {
         }
 
         XmlResourceParser parser = res.getLayout(resource);
+        // 最终返回`XmlBlock.Parser`
         try {
             return inflate(parser, root, attachToRoot);
         } finally {

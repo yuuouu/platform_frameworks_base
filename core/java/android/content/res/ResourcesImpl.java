@@ -278,10 +278,13 @@ public class ResourcesImpl {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     void getValue(@AnyRes int id, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
+        // 1. 调用AssetManager的方法来获取资源值。`mAssets`是AssetManager实例。如果找到资源，方法返回true，并将数据填充到outValue中。
         boolean found = mAssets.getResourceValue(id, 0, outValue, resolveRefs);
         if (found) {
+			// 2. 成功找到，直接返回。
             return;
         }
+		// 3. 如果没有找到，抛出异常。
         throw new NotFoundException("Resource ID #0x" + Integer.toHexString(id));
     }
 
@@ -294,6 +297,13 @@ public class ResourcesImpl {
         throw new NotFoundException("Resource ID #0x" + Integer.toHexString(id));
     }
 
+	/**
+	 *【核心变化】首先，需要将资源名称（如 "app_name"）解析成一个资源ID（如 0x7f0a0001）。
+     * 参数说明：
+     *	- `name`: 资源名称，如 "app_name"
+     *	- `"string"`: 默认的资源类型（defType）。这里硬编码为"string"，意味着这个方法默认查找的是字符串资源。
+     *	- `null`: 默认的包名（defPackage）。为null通常表示在当前包的资源中查找。
+     **/
     void getValue(String name, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
         int id = getIdentifier(name, "string", null);
@@ -305,13 +315,16 @@ public class ResourcesImpl {
     }
 
     private static boolean isIntLike(@NonNull String s) {
+     	// 排除空字符串或长度超过10（超过32位int的范围）
         if (s.isEmpty() || s.length() > 10) return false;
         for (int i = 0, size = s.length(); i < size; i++) {
             final char c = s.charAt(i);
-            if (c < '0' || c > '9') {
+            if (c < '0' || c > '9') {	
+				// 遍历每个字符，如果发现非数字字符，则返回false
                 return false;
             }
         }
+		// 所有字符都是数字，返回true
         return true;
     }
 
@@ -319,8 +332,10 @@ public class ResourcesImpl {
         if (name == null) {
             throw new NullPointerException("name is null");
         }
+		// 1. 【优化检查】判断资源名称`name`是否看起来像一个整数。这是一个重要的优化和兼容性处理。因为资源名称理论上可以是数字字符串（例如 "1234"）。
         if (isIntLike(name)) {
             try {
+   				 // 2. 如果名称像整数，直接尝试将其解析成int。这意味着如果调用 getIdentifier("1234", ...)，它会直接返回整数1234。
                 return Integer.parseInt(name);
             } catch (Exception e) {
                 // Ignore
@@ -1313,62 +1328,76 @@ public class ResourcesImpl {
     }
 
     /**
-     * Loads an XML parser for the specified file.
-     *
-     * @param file the path for the XML file to parse
-     * @param id the resource identifier for the file
-     * @param assetCookie the asset cookie for the file
-     * @param type the type of resource (used for logging)
-     * @return a parser for the specified XML file
-     * @throws NotFoundException if the file could not be loaded
-     */
-    @NonNull
-    XmlResourceParser loadXmlResourceParser(@NonNull String file, @AnyRes int id, int assetCookie,
-            @NonNull String type)
-            throws NotFoundException {
-        if (id != 0) {
-            try {
-                synchronized (mCachedXmlBlocks) {
-                    final int[] cachedXmlBlockCookies = mCachedXmlBlockCookies;
-                    final String[] cachedXmlBlockFiles = mCachedXmlBlockFiles;
-                    final XmlBlock[] cachedXmlBlocks = mCachedXmlBlocks;
-                    // First see if this block is in our cache.
-                    final int num = cachedXmlBlockFiles.length;
-                    for (int i = 0; i < num; i++) {
-                        if (cachedXmlBlockCookies[i] == assetCookie && cachedXmlBlockFiles[i] != null
-                                && cachedXmlBlockFiles[i].equals(file)) {
-                            return cachedXmlBlocks[i].newParser(id);
-                        }
-                    }
+	* 加载指定 XML 文件的解析器。加载并返回一个 XML 资源解析器，用于解析指定资源 ID 的 XML 文件
+	*
+	* @param file 待解析 XML 文件的路径
+	* @param id 文件的资源标识符
+	* @param assetCookie 文件的资源 cookie
+	* @param type 资源类型（用于日志记录）
+	* @return 指定 XML 文件的解析器
+	* @throws NotFoundException（如果文件无法加载）
+	*/
+    @NonNul
+	XmlResourceParser loadXmlResourceParser(@NonNull String file, @AnyRes int id, int assetCookie,
+	        @NonNull String type)
+	        throws NotFoundException {
+	    // 检查资源 ID 是否有效（非 0 表示有明确的资源引用）
+	    if (id != 0) {
+	        try {
+	            // 使用同步块保护缓存访问，防止多线程竞争
+	            synchronized (mCachedXmlBlocks) {
+	                // 获取缓存数组，存储已加载的 XML 块、对应的文件路径和 assetCookie
+	                final int[] cachedXmlBlockCookies = mCachedXmlBlockCookies;  // 缓存的 assetCookie 数组
+	                final String[] cachedXmlBlockFiles = mCachedXmlBlockFiles;   // 缓存的 Xml文件路径数组
+	                final XmlBlock[] cachedXmlBlocks = mCachedXmlBlocks;         // 缓存的 XmlBlock 对象数组
+	                // 获取缓存数组的大小（固定长度，通常为 4）
+	                final int num = cachedXmlBlockFiles.length;
 
-                    // Not in the cache, create a new block and put it at
-                    // the next slot in the cache.
-                    final XmlBlock block = mAssets.openXmlBlockAsset(assetCookie, file);
-                    if (block != null) {
-                        final int pos = (mLastCachedXmlBlockIndex + 1) % num;
-                        mLastCachedXmlBlockIndex = pos;
-                        final XmlBlock oldBlock = cachedXmlBlocks[pos];
-                        if (oldBlock != null) {
-                            oldBlock.close();
-                        }
-                        cachedXmlBlockCookies[pos] = assetCookie;
-                        cachedXmlBlockFiles[pos] = file;
-                        cachedXmlBlocks[pos] = block;
-                        return block.newParser(id);
-                    }
-                }
-            } catch (Exception e) {
-                final NotFoundException rnf = new NotFoundException("File " + file
-                        + " from xml type " + type + " resource ID #0x" + Integer.toHexString(id));
-                rnf.initCause(e);
-                throw rnf;
-            }
-        }
+	                // 遍历缓存，检查是否已缓存目标 XML 文件
+	                for (int i = 0; i < num; i++) {
+	                    // 如果缓存槽位中的 assetCookie 和文件路径匹配，说明已缓存
+	                    if (cachedXmlBlockCookies[i] == assetCookie && cachedXmlBlockFiles[i] != null
+	                            && cachedXmlBlockFiles[i].equals(file)) {
+	                        // 从缓存的 XmlBlock 创建新的解析器并返回，复用已加载的资源
+	                        return cachedXmlBlocks[i].newParser(id);
+	                    }
+	                }
 
-        throw new NotFoundException("File " + file + " from xml type " + type + " resource ID #0x"
-                + Integer.toHexString(id));
-    }
+	                // 如果缓存未命中，创建新的 XmlBlock
+	                // 调用 AssetManager 的 native 方法加载二进制 XML 数据
+	                final XmlBlock block = mAssets.openXmlBlockAsset(assetCookie, file);
+	                if (block != null) {
+	                    // 计算缓存的下一个插入位置（循环覆盖策略）
+	                    final int pos = (mLastCachedXmlBlockIndex + 1) % num;
+	                    // 更新最近使用的缓存索引
+	                    mLastCachedXmlBlockIndex = pos;
+	                    // 如果目标缓存槽位已有旧的 XmlBlock，关闭它以释放资源
+	                    final XmlBlock oldBlock = cachedXmlBlocks[pos];
+	                    if (oldBlock != null) {
+	                        oldBlock.close();
+	                    }
+	                    // 更新缓存：存储新的 assetCookie、文件路径和 XmlBlock
+	                    cachedXmlBlockCookies[pos] = assetCookie;
+	                    cachedXmlBlockFiles[pos] = file;
+	                    cachedXmlBlocks[pos] = block;
+	                    // 从新创建的 XmlBlock 返回解析器
+	                    return block.newParser(id);
+	                }
+	            }
+	        } catch (Exception e) {
+	            // 如果加载或解析过程中发生异常，包装为 NotFoundException
+	            final NotFoundException rnf = new NotFoundException("File " + file
+	                    + " from xml type " + type + " resource ID #0x" + Integer.toHexString(id));
+	            rnf.initCause(e);
+	            throw rnf;
+	        }
+	    }
 
+	    // 如果资源 ID 无效（id == 0），直接抛出异常
+	    throw new NotFoundException("File " + file + " from xml type " + type + " resource ID #0x"
+	            + Integer.toHexString(id));
+	}
+		
     /**
      * Start preloading of resource data using this Resources object.  Only
      * for use by the zygote process for loading common system resources.

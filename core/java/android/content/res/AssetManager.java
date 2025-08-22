@@ -271,29 +271,45 @@ public final class AssetManager implements AutoCloseable {
      */
     @GuardedBy("sSync")
     @VisibleForTesting
-    public static void createSystemAssetsInZygoteLocked(boolean reinitialize,
-            String frameworkPath) {
+    public static void createSystemAssetsInZygoteLocked(boolean reinitialize, String frameworkPath) {
+        // 1. 如果系统AssetManager已经初始化且不需要重新初始化，则直接返回。
         if (sSystem != null && !reinitialize) {
             return;
         }
 
         try {
+            // 2. 创建一个ApkAssets列表，用于存放所有系统资源包。
             final ArrayList<ApkAssets> apkAssets = new ArrayList<>();
+
+            // 3. 【核心】加载最基础的系统框架资源APK（通常是 /system/framework/framework-res.apk）
+            //    并将其标记为 SYSTEM 属性。
             apkAssets.add(ApkAssets.loadFromPath(frameworkPath, ApkAssets.PROPERTY_SYSTEM));
 
-            // TODO(Ravenwood): overlay support?
+            // 4. 获取所有不可变的框架覆盖包（idmap）的路径。
+            //    Overlay（覆盖）机制允许在不修改原APK的情况下替换其资源。
+            //    例如，系统主题就可以通过Overlay来改变系统UI的颜色和图标。
             final String[] systemIdmapPaths =
-                    RavenwoodEnvironment.getInstance().isRunningOnRavenwood() ? new String[0] :
                     OverlayConfig.getZygoteInstance().createImmutableFrameworkIdmapsInZygote();
+
+            // 5. 加载所有系统覆盖包。
             for (String idmapPath : systemIdmapPaths) {
                 apkAssets.add(ApkAssets.loadOverlayFromPath(idmapPath, ApkAssets.PROPERTY_SYSTEM));
             }
 
+            // 6. 将加载好的系统ApkAssets列表保存到静态变量中。
+            //    sSystemApkAssetsSet 可能用于快速查找或去重。
             sSystemApkAssetsSet = new ArraySet<>(apkAssets);
-            sSystemApkAssets = apkAssets.toArray(new ApkAssets[0]);
+            //    sSystemApkAssets 是数组形式，其索引将来就会成为系统资源的cookie。
+            sSystemApkAssets = apkAssets.toArray(new ApkAssets[apkAssets.size()]);
+
+            // 7. 创建全局的系统AssetManager实例（如果尚未创建）。
             if (sSystem == null) {
+                // `true` 参数可能是一个标记，表示这是一个特殊的系统实例。
                 sSystem = new AssetManager(true /*sentinel*/);
             }
+
+            // 8. 【最关键的一步】将加载好的系统APK包数组设置到系统AssetManager中。
+            //    第二个参数`false`表示不要使缓存失效。
             sSystem.setApkAssets(sSystemApkAssets, false /*invalidateCaches*/);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to create system AssetManager", e);
@@ -636,38 +652,47 @@ public final class AssetManager implements AutoCloseable {
     }
 
     /**
-     * Populates {@code outValue} with the data associated a particular
-     * resource identifier for the current configuration.
+     * 将 {@code outValue} 填充与当前配置中某个资源标识符关联的数据。
      *
-     * @param resId the resource identifier to load
-     * @param densityDpi the density bucket for which to load the resource
-     * @param outValue the typed value in which to put the data
-     * @param resolveRefs {@code true} to resolve references, {@code false}
-     *                    to leave them unresolved
-     * @return {@code true} if the data was loaded into {@code outValue},
-     *         {@code false} otherwise
+     * @param resId 要加载的资源标识符
+     * @param densityDpi 要加载资源的密度桶
+     * @param outValue 用于存储数据的类型化值
+     * @param resolveRefs {@code true} 解析引用，{@code false}不解析引用
+     * @return {@code true} 如果数据已加载到 {@code outValue}，
+     *       {@code false} 不满足
      */
     @UnsupportedAppUsage
     boolean getResourceValue(@AnyRes int resId, int densityDpi, @NonNull TypedValue outValue,
             boolean resolveRefs) {
         Objects.requireNonNull(outValue, "outValue");
-        synchronized (this) {
+        synchronized (this) { // 保证多线程安全
+        	// 检查AssetManager实例是否有效
             ensureValidLocked();
+			// 1. 【关键JNI调用】调用native方法。mObject是一个long类型的成员变量，它存储了C++层AssetManager对象的指针地址。
+        	// 这个方法会执行真正的资源查找工作，并将结果填充到outValue中。
+        	// 返回值cookie是一个标识符，代表这个资源来自于哪个APK（不同APK可能拥有相同ID的资源）。
             final int cookie = nativeGetResourceValue(
                     mObject, resId, (short) densityDpi, outValue, resolveRefs);
             if (cookie <= 0) {
+				// 2. 如果cookie无效（<=0），表示没找到资源，返回false
                 return false;
             }
 
+			// 3. 转换配置变更标志位（从Native的格式转换为Java的格式）。
             // Convert the changing configurations flags populated by native code.
             outValue.changingConfigurations = ActivityInfo.activityInfoConfigNativeToJava(
                     outValue.changingConfigurations);
-
+			// 4. 特别处理字符串类型。
             if (outValue.type == TypedValue.TYPE_STRING) {
+				// outValue.data此时是字符串在全局字符串池中的索引。根据cookie（哪个APK）和data（索引），去获取真正的字符串对象。
+                // 为什么需要区分不同的apk,是因为一个Android进程中同时加载的APK包会存在多个
+                // 包括应用主APK、系统框架(framework-res.apk)、动态功能模块APK(App Bundle包)、依赖库的APK、静态链接库的资源、Overlay APKs (SystemUI覆盖包)、系统资源扩展APKs
                 if ((outValue.string = getPooledStringForCookie(cookie, outValue.data)) == null) {
+					// 获取失败返回false
                     return false;
                 }
             }
+			// 5. 成功找到并处理，返回true。
             return true;
         }
     }
@@ -897,8 +922,15 @@ public final class AssetManager implements AutoCloseable {
     @UnsupportedAppUsage
     @AnyRes int getResourceIdentifier(@NonNull String name, @Nullable String defType,
             @Nullable String defPackage) {
-        synchronized (this) {
-            ensureValidLocked();
+        synchronized (this) { // 加锁保证线程安全
+        	// 检查AssetManager实例是否有效
+            ensureValidLocked()
+	        // name is checked in JNI. (注释说明参数检查在JNI层进行)
+	        //【JNI调用】调用native方法。
+	        // - `mObject`: 指向C++层AssetManager对象的指针。
+	        // - `name`: 要查找的资源名称。
+	        // - `defType`: 资源类型（如 "string", "drawable"）,此处为"string"
+	        // - `defPackage`: 资源所在的包名。
             // name is checked in JNI.
             return nativeGetResourceIdentifier(mObject, name, defType, defPackage);
         }
@@ -1202,9 +1234,9 @@ public final class AssetManager implements AutoCloseable {
     }
 
     /**
-     * Retrieve a non-asset as a compiled XML file.  Not for use by applications.
+     * 检索一个非资产的编译 XML 文件。  不适用于应用程序。
      *
-     * @param fileName The name of the file to retrieve.
+     * @param fileName 要检索的文件的名称。
      * @hide
      */
     @NonNull XmlBlock openXmlBlockAsset(@NonNull String fileName) throws IOException {
@@ -1212,11 +1244,10 @@ public final class AssetManager implements AutoCloseable {
     }
 
     /**
-     * Retrieve a non-asset as a compiled XML file.  Not for use by
-     * applications.
+     * 作为编译后的 XML 文件检索非资产。  不适用于应用程序。
      *
-     * @param cookie Identifier of the package to be opened.
-     * @param fileName Name of the asset to retrieve.
+     * @param cookie 要打开的包的标识符。
+     * @param fileName 要检索的资产的名称。
      * @hide
      */
     @NonNull XmlBlock openXmlBlockAsset(int cookie, @NonNull String fileName) throws IOException {

@@ -36,64 +36,49 @@ public class TypedValue {
     /** The value contains no data. */
     public static final int TYPE_NULL = 0x00;
 
-    /** The <var>data</var> field holds a resource identifier. */
+    /** <var>data</var> 字段存储资源标识符。 */
     public static final int TYPE_REFERENCE = 0x01;
-    /** The <var>data</var> field holds an attribute resource
-     *  identifier (referencing an attribute in the current theme
-     *  style, not a resource entry). */
+    /** <var>data</var> 字段存储属性资源标识符（引用当前主题样式中的属性，而非资源条目）。 */
     public static final int TYPE_ATTRIBUTE = 0x02;
-    /** The <var>string</var> field holds string data.  In addition, if
-     *  <var>data</var> is non-zero then it is the string block
-     *  index of the string and <var>assetCookie</var> is the set of
-     *  assets the string came from. */
+    /** <var>string</var> 字段存储字符串数据。此外，如果<var>data</var> 不为零，则表示该字符串的块索引，
+     *  <var>assetCookie</var> 表示该字符串所属的资产集合。
+     *   */
     public static final int TYPE_STRING = 0x03;
-    /** The <var>data</var> field holds an IEEE 754 floating point number. */
+    /** <var>data</var> 字段存储一个 IEEE 754 浮点数。 */
     public static final int TYPE_FLOAT = 0x04;
-    /** The <var>data</var> field holds a complex number encoding a
-     *  dimension value. */
+    /** <var>data</var> 字段存储一个复数，该复数表示一个维度值。 */
     public static final int TYPE_DIMENSION = 0x05;
-    /** The <var>data</var> field holds a complex number encoding a fraction
-     *  of a container. */
+    /** <var>data</var> 字段存储一个复数，该复数表示容器中的一部分。 */
     public static final int TYPE_FRACTION = 0x06;
 
-    /** Identifies the start of plain integer values.  Any type value
-     *  from this to {@link #TYPE_LAST_INT} means the
-     *  <var>data</var> field holds a generic integer value. */
+    /** 标识普通整数值的开始。 从此处到 {@link #TYPE_LAST_INT} 的任何类型值均表示 <var>data</var> 字段包含一个通用整数值。 */
     public static final int TYPE_FIRST_INT = 0x10;
 
-    /** The <var>data</var> field holds a number that was
-     *  originally specified in decimal. */
+    /** <var>data</var> 字段存储一个最初以十进制形式指定的数字。 */
     public static final int TYPE_INT_DEC = 0x10;
-    /** The <var>data</var> field holds a number that was
-     *  originally specified in hexadecimal (0xn). */
+    /** <var>data</var> 字段存储一个最初以十六进制（0xn）形式指定的数字。 */
     public static final int TYPE_INT_HEX = 0x11;
     /**
-     * {@link #data} holds 0 to represent {@code false}, or a value different from 0 to represent
-     * {@code true}.
+     * {@link #data} 存储 0 表示 {@code false}，或存储非零值表示
+     * {@code true}。
      */
     public static final int TYPE_INT_BOOLEAN = 0x12;
-    /** Identifies the start of integer values that were specified as
-     *  color constants (starting with '#'). */
+    /** 标识以颜色常量形式指定的整数值的起始位置（以'#'开头）。 */
     public static final int TYPE_FIRST_COLOR_INT = 0x1c;
 
-    /** The <var>data</var> field holds a color that was originally
-     *  specified as #aarrggbb. */
+    /** <var>data</var> 字段存储的颜色最初被指定为 #aarrggbb。 */
     public static final int TYPE_INT_COLOR_ARGB8 = 0x1c;
-    /** The <var>data</var> field holds a color that was originally
-     *  specified as #rrggbb. */
+    /** <var>data</var> 字段存储的颜色最初以 #rrggbb 格式指定。 */
     public static final int TYPE_INT_COLOR_RGB8 = 0x1d;
-    /** The <var>data</var> field holds a color that was originally
-     *  specified as #argb. */
+    /** <var>data</var> 字段存储的颜色最初以 #argb 格式指定。 */
     public static final int TYPE_INT_COLOR_ARGB4 = 0x1e;
-    /** The <var>data</var> field holds a color that was originally
-     *  specified as #rgb. */
+    /** <var>data</var> 字段存储的颜色最初以 #rgb 格式指定。 */
     public static final int TYPE_INT_COLOR_RGB4 = 0x1f;
 
-    /** Identifies the end of integer values that were specified as color
-     *  constants. */
+    /** 标识作为颜色常量指定的整数值的结束。 */
     public static final int TYPE_LAST_COLOR_INT = 0x1f;
 
-    /** Identifies the end of plain integer values. */
+    /** 标识普通整数值的结束。 */
     public static final int TYPE_LAST_INT = 0x1f;
 
     /* ------------------------------------------------------------ */

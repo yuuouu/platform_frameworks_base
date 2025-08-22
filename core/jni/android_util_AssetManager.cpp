@@ -119,24 +119,68 @@ extern int DupFdCloExec(int fd);
 // ----------------------------------------------------------------------------
 
 // Java asset cookies have 0 as an invalid cookie, but TypedArray expects < 0.
+// 函数：将C++层的ApkAssetsCookie转换为Java层的jint cookie
+// 作用：在C++和Java之间安全地传递标识资源来源的cookie值
+// 参数：cookie - C++层的ApkAssetsCookie（通常是基于0的索引）
+// 返回值：Java层的cookie（jint类型）
 constexpr inline static jint ApkAssetsCookieToJavaCookie(ApkAssetsCookie cookie) {
+  // 转换逻辑：
+  // 1. 如果C++的cookie有效（不等于kInvalidCookie），则将其加1后转换为jint。
+  // 2. 如果无效，返回-1。
   return cookie != kInvalidCookie ? static_cast<jint>(cookie + 1) : -1;
 }
 
+// 函数：将Java层的jint cookie转换回C++层的ApkAssetsCookie
+// 作用：将Java层传来的cookie还原为C++层可理解的格式
+// 参数：cookie - Java层的cookie（jint类型）
+// 返回值：C++层的ApkAssetsCookie
 constexpr inline static ApkAssetsCookie JavaCookieToApkAssetsCookie(jint cookie) {
+  // 转换逻辑：
+  // 1. 如果Java的cookie大于0，则将其减1后转换为ApkAssetsCookie。
+  // 2. 否则，返回kInvalidCookie表示无效cookie。
   return cookie > 0 ? static_cast<ApkAssetsCookie>(cookie - 1) : kInvalidCookie;
 }
 
+
+// 函数：将C++层的SelectedValue数据复制到Java层的TypedValue对象中
+// 作用：作为JNI桥梁，将Native层的资源查询结果传递回Java层
+// 参数：
+//   env: JNIEnv指针，用于调用JNI函数
+//   value: C++层获取到的资源值结果（SelectedValue结构体）
+//   out_typed_value: Java层的TypedValue对象（jobect），用于接收数据
+// 返回值：Java层的assetCookie（jint类型）
 static jint CopyValue(JNIEnv* env, const AssetManager2::SelectedValue& value,
                       jobject out_typed_value) {
+  // 1. 设置类型字段：资源的数据类型（TYPE_STRING, TYPE_INT_COLOR_ARGB8等）
   env->SetIntField(out_typed_value, gTypedValueOffsets.mType, value.type);
+
+  // 2. 设置assetCookie字段：标识资源来自哪个APK包（使用转换函数确保Java层语义正确）
   env->SetIntField(out_typed_value, gTypedValueOffsets.mAssetCookie,
                    ApkAssetsCookieToJavaCookie(value.cookie));
+
+  // 3. 设置数据字段：资源的核心数据。
+  //    - 如果是简单类型（如颜色），data直接存储值（如0xFFFF0000）
+  //    - 如果是复杂类型（如字符串），data存储的是在全局字符串池中的索引
   env->SetIntField(out_typed_value, gTypedValueOffsets.mData, value.data);
+
+  // 4. 设置字符串字段：显式设置为null。
+  //    注意：对于字符串资源，这个字段不是在CopyValue中设置的！
+  //    而是在Java层的后续处理中，根据data字段的索引，调用getPooledStringForCookie来获取字符串对象。
+  //    这里设为null是为了避免旧的字符串引用造成内存泄漏或混淆。
   env->SetObjectField(out_typed_value, gTypedValueOffsets.mString, nullptr);
+
+  // 5. 设置资源ID字段：存储资源本身的ID。
+  //    这个字段在Java层的TypedValue中用于一些调试和内部逻辑。
   env->SetIntField(out_typed_value, gTypedValueOffsets.mResourceId, value.resid);
+
+  // 6. 设置配置变更字段：存储影响此资源的配置变更标志（如区域、屏幕方向等更改时需重启Activity）
   env->SetIntField(out_typed_value, gTypedValueOffsets.mChangingConfigurations, value.flags);
+
+  // 7. 设置密度字段：存储资源对应的屏幕密度（如160dpi、320dpi等）
   env->SetIntField(out_typed_value, gTypedValueOffsets.mDensity, value.config.density);
+
+  // 8. 返回Java层的assetCookie给上层调用者。
+  //    上层可能用这个返回值做进一步判断（参见之前代码中的`if (cookie <= 0)`判断）。
   return static_cast<jint>(ApkAssetsCookieToJavaCookie(value.cookie));
 }
 
@@ -688,21 +732,25 @@ static jlong NativeOpenXmlAssetFd(JNIEnv* env, jobject /*clazz*/, jlong ptr, int
 static jint NativeGetResourceValue(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid,
                                    jshort density, jobject typed_value,
                                    jboolean resolve_references) {
+  // 1. 将Java传入的long型指针`ptr`转换回C++的AssetManager对象。`LockAndStartAssetManager`是一个辅助函数，它完成转换并加锁。
   auto assetmanager = LockAndStartAssetManager(ptr);
-  ResourceTimer _timer(ResourceTimer::Counter::GetResourceValue);
-
+  ResourceTimer _timer(ResourceTimer::Counter::GetResourceValue);	
+  // 2. 【核心调用】使用C++的AssetManager根据资源ID获取资源值。返回的是一个`std::optional<AssetManager2::ResourceValue>`
   auto value = assetmanager->GetResource(static_cast<uint32_t>(resid), false /*may_be_bag*/,
                                          static_cast<uint16_t>(density));
+  // 3. 检查是否成功获取到值。如果没有（!value.has_value()），返回一个无效的cookie。
   if (!value.has_value()) {
     return ApkAssetsCookieToJavaCookie(kInvalidCookie);
   }
-
+  
+  // 4. 如果调用者要求解析引用（resolve_references为true），则进行解析。例如，资源可能是一个指向另一个资源的引用（@dimen/abc_width）。
   if (resolve_references) {
     auto result = assetmanager->ResolveReference(value.value());
     if (!result.has_value()) {
       return ApkAssetsCookieToJavaCookie(kInvalidCookie);
     }
   }
+  // 5. 【关键步骤】将C++层得到的ResourceValue结构体中的数据，复制到Java层的TypedValue对象中。这个函数会设置outValue的type、data、assetCookie等字段。
   return CopyValue(env, *value, typed_value);
 }
 
@@ -959,21 +1007,42 @@ static jint NativeGetParentThemeIdentifier(JNIEnv* env, jclass /*clazz*/, jlong 
   return parentThemeResId.value_or(0);
 }
 
+/**
+ * JNI Native方法，对应于Java层的nativeGetResourceIdentifier
+ * 作用：根据资源名称、类型和包名，查找对应的资源ID
+ * 参数：
+ *   env: JNI环境指针，用于访问JNI函数
+ *   clazz: 调用此Native方法的Java类（此处未使用）
+ *   ptr: Java层传入的long型变量，实质是C++层AssetManager对象的指针地址
+ *   name: 要查找的资源名称（Java字符串），例如 "app_name"
+ *   def_type: 资源的默认类型（Java字符串），例如 "string"，可以为null
+ *   def_package: 资源的默认包名（Java字符串），例如 "com.example.app"，可以为null
+ * 返回值：成功找到返回资源ID（jint），找不到返回0
+**/
 static jint NativeGetResourceIdentifier(JNIEnv* env, jclass /*clazz*/, jlong ptr, jstring name,
                                         jstring def_type, jstring def_package) {
+  // 1. 将Java字符串name转换为UTF-8格式的C字符串（ScopedUtfChars是RAII包装类，自动管理内存）
+  //    这是必要的，因为C++代码需要操作C风格的字符串，而不是Java的jstring
   ScopedUtfChars name_utf8(env, name);
+  
+  // 2. 检查转换是否成功。如果失败（例如传入的name为null），c_str()返回nullptr
   if (name_utf8.c_str() == nullptr) {
-    // This will throw NPE.
+    // 转换失败，通常是因为传入的name字符串为null
+    // 根据JNI规范，ScopedUtfChars的构造函数在失败时已经抛出了NullPointerException
+    // 所以这里直接返回0，Java层会收到异常和0返回值
     return 0;
   }
 
-  std::string type;
-  if (def_type != nullptr) {
-    ScopedUtfChars type_utf8(env, def_type);
-    CHECK(type_utf8.c_str() != nullptr);
-    type = type_utf8.c_str();
+  // 3. 处理可选的资源类型参数def_type
+  std::string type; // 创建空的C++字符串用于存储类型
+  if (def_type != nullptr) { // 如果Java层传入了非null的类型参数
+    ScopedUtfChars type_utf8(env, def_type); // 同样转换为UTF-8 C字符串
+    CHECK(type_utf8.c_str() != nullptr); // 使用CHECK断言确保转换成功，失败会crash（因为def_type不应为无效字符串）
+    type = type_utf8.c_str(); // 将C字符串赋值给std::string
   }
+  // 如果def_type为null，type将保持为空字符串
 
+  // 4. 处理可选的包名参数def_package（逻辑与处理def_type完全相同）
   std::string package;
   if (def_package != nullptr) {
     ScopedUtfChars package_utf8(env, def_package);
@@ -981,14 +1050,26 @@ static jint NativeGetResourceIdentifier(JNIEnv* env, jclass /*clazz*/, jlong ptr
     package = package_utf8.c_str();
   }
 
+  // 5. 获取C++层的AssetManager对象
+  //    LockAndStartAssetManager是一个辅助函数，它完成两件事：
+  //    a) 将long型的ptr指针转换回AssetManager2*类型：reinterpret_cast<AssetManager2*>(ptr)
+  //    b) 对AssetManager加锁，保证多线程安全（返回一个加锁的RAII包装对象）
   auto assetmanager = LockAndStartAssetManager(ptr);
+
+  // 6. 【核心调用】使用C++ AssetManager查询资源ID
+  //    参数：资源名称、类型、包名（都是C++ std::string）
+  //    返回值：std::optional<uint32_t>，可能包含资源ID，也可能为空（表示没找到）
   auto resid = assetmanager->GetResourceId(name_utf8.c_str(), type, package);
-  if (!resid.has_value()) {
-    return 0;
+  
+  // 7. 检查查询结果
+  if (!resid.has_value()) { // 如果optional中没有值，表示查找失败
+    return 0; // 返回0给Java层，表示未找到资源
   }
 
-  return static_cast<jint>(*resid);
+  // 8. 查找成功，将C++的uint32_t资源ID转换为Java的jint类型并返回
+  return static_cast<jint>(*resid); // 使用*操作符从optional中取出值
 }
+
 
 static jstring NativeGetResourceName(JNIEnv* env, jclass /*clazz*/, jlong ptr, jint resid) {
   auto assetmanager = LockAndStartAssetManager(ptr);
